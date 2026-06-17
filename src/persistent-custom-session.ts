@@ -18,6 +18,7 @@
 import { spawn, ChildProcess } from 'node:child_process';
 import { EventEmitter } from 'node:events';
 import * as readline from 'node:readline';
+import RE2 from 're2';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 
@@ -77,9 +78,15 @@ function buildSanitizer(engineConfig: CustomEngineConfig): (text: string) => str
   if (engineConfig.sanitizePatterns) {
     for (const p of engineConfig.sanitizePatterns) {
       try {
-        patterns.push({ re: new RegExp(p, 'g'), replacement: '***' });
-      } catch {
-        // Invalid regex — skip silently
+        // RE2 runs in linear time and never backtracks, so a user-supplied
+        // sanitize pattern cannot trigger ReDoS on attacker-influenced output.
+        patterns.push({ re: new RE2(p, 'g') as unknown as RegExp, replacement: '***' });
+      } catch (err) {
+        // A silently-dropped sanitize pattern means secrets stop being redacted
+        // — make it visible so the operator fixes the typo.
+        console.warn(
+          `[custom-session:${engineConfig.name}] ignoring invalid sanitizePattern ${JSON.stringify(p)}: ${(err as Error).message}`,
+        );
       }
     }
   }
@@ -257,8 +264,13 @@ export class PersistentCustomSession extends EventEmitter implements ISession {
         const event = JSON.parse(line) as StreamEvent;
         this._handlePersistentEvent(event);
       } catch {
-        this.emit(SESSION_EVENT.LOG, `[${this.engineConfig.name}-stdout] ${line}`);
+        // Non-JSON stdout (banners, prompts) can carry secrets — sanitize the
+        // same way stderr is before logging.
+        this.emit(SESSION_EVENT.LOG, `[${this.engineConfig.name}-stdout] ${this.sanitize(line)}`);
       }
+    });
+    this._rl.on('error', (err: Error) => {
+      this.emit(SESSION_EVENT.ERROR, new Error(`readline error: ${err.message}`));
     });
 
     this.proc.stderr?.on('data', (data: Buffer) => {
@@ -271,6 +283,14 @@ export class PersistentCustomSession extends EventEmitter implements ISession {
     });
 
     this.proc.on('error', (err) => {
+      this._isReady = false;
+      try {
+        this._rl?.close();
+      } catch {
+        /* ignore */
+      }
+      this._rl = null;
+      this.proc = null;
       this.emit(SESSION_EVENT.ERROR, err);
     });
 
@@ -386,7 +406,13 @@ export class PersistentCustomSession extends EventEmitter implements ISession {
       },
     };
 
-    this.proc.stdin!.write(JSON.stringify(payload) + '\n');
+    const stdin = this.proc.stdin;
+    if (!stdin || stdin.writable === false) {
+      throw new Error('Session stdin is not writable (process may have exited). Call start() first.');
+    }
+    stdin.write(JSON.stringify(payload) + '\n', (err) => {
+      if (err) this.emit(SESSION_EVENT.ERROR, new Error(`Failed to write to stdin: ${err.message}`));
+    });
 
     if (options.callbacks) this._streamCallbacks = options.callbacks;
 

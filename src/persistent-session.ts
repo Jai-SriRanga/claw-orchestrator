@@ -329,9 +329,18 @@ export class PersistentClaudeSession extends EventEmitter implements ISession {
       try {
         const event = JSON.parse(line) as StreamEvent;
         this._handleEvent(event);
-      } catch {
-        this.emit(SESSION_EVENT.LOG, `[stdout] ${line}`);
+      } catch (err) {
+        // Distinguish malformed JSON (a protocol bug) from plain log lines so
+        // operators can triage. readline guarantees whole lines, so this is
+        // never a frame-split artifact.
+        this.emit(SESSION_EVENT.LOG, `[stdout] ${line}${err instanceof Error ? ` (parse: ${err.message})` : ''}`);
       }
+    });
+    // Without an 'error' handler a stdout stream fault (ECONNRESET, premature
+    // close) makes readline emit an unhandled 'error' that crashes the monitor
+    // process itself — exactly what Recovery > Complexity forbids.
+    this._rl.on('error', (err: Error) => {
+      this.emit(SESSION_EVENT.ERROR, new Error(`readline error: ${err.message}`));
     });
 
     this.proc.stderr?.on('data', (data: Buffer) => {
@@ -351,6 +360,16 @@ export class PersistentClaudeSession extends EventEmitter implements ISession {
     });
 
     this.proc.on('error', (err) => {
+      // Spawn/runtime failure: drop references so a later send() fails the
+      // readiness check instead of writing to a dead process.
+      this._isReady = false;
+      try {
+        this._rl?.close();
+      } catch {
+        /* ignore */
+      }
+      this._rl = null;
+      this.proc = null;
       this.emit(SESSION_EVENT.ERROR, err);
     });
 
@@ -602,7 +621,15 @@ export class PersistentClaudeSession extends EventEmitter implements ISession {
       },
     };
 
-    this.proc.stdin!.write(JSON.stringify(payload) + '\n');
+    const stdin = this.proc.stdin;
+    if (!stdin || stdin.writable === false) {
+      throw new Error('Session stdin is not writable (process may have exited). Call start() first.');
+    }
+    // Pass an error callback so a broken pipe / closed stdin surfaces instead of
+    // silently dropping the write and leaving waitForComplete callers hung.
+    stdin.write(JSON.stringify(payload) + '\n', (err) => {
+      if (err) this.emit(SESSION_EVENT.ERROR, new Error(`Failed to write to stdin: ${err.message}`));
+    });
 
     if (options.callbacks) this._streamCallbacks = options.callbacks;
 
@@ -814,7 +841,7 @@ export class PersistentClaudeSession extends EventEmitter implements ISession {
         }
       }
       const p = this.proc;
-      setTimeout(() => {
+      const sigkillTimer = setTimeout(() => {
         try {
           process.kill(-pid, 'SIGKILL');
         } catch {
@@ -826,6 +853,8 @@ export class PersistentClaudeSession extends EventEmitter implements ISession {
           /* ESRCH expected */
         }
       }, STOP_SIGKILL_DELAY_MS);
+      // Don't keep the event loop alive just for the force-kill fallback.
+      sigkillTimer.unref();
       this.proc = null;
     }
     this._isReady = false;

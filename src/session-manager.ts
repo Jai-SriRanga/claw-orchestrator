@@ -585,6 +585,16 @@ export class SessionManager {
       /* prior failure shouldn't block this caller */
     }
 
+    // The prior-chain await can sleep arbitrarily long. In that window a
+    // concurrent stopSession() may have stopped this session and removed it
+    // from the map. Re-check before writing, so we fail cleanly instead of
+    // calling send() on a detached/stopped session (TOCTOU on the sessions map).
+    if (this.sessions.get(name) !== managed) {
+      releaseChain();
+      if (managed.sendChain === link) managed.sendChain = undefined;
+      throw new Error(`Session '${name}' was stopped while a prior turn was in flight`);
+    }
+
     try {
       managed.lastActivity = Date.now();
 
@@ -597,16 +607,25 @@ export class SessionManager {
       if (options.plan) sendOpts.plan = true;
 
       if (options.onEvent || options.onChunk) {
+        // A throwing user callback must not corrupt the turn or leave the
+        // sendChain unreleased — isolate each invocation.
+        const safe = (fn: () => void): void => {
+          try {
+            fn();
+          } catch (err) {
+            this.logger.warn?.(`sendMessage stream callback threw: ${(err as Error).message}`);
+          }
+        };
         sendOpts.callbacks = {
           onText: (text: string) => {
-            if (options.onChunk) options.onChunk(text);
-            if (options.onEvent) options.onEvent({ type: 'text', result: text } as StreamEvent);
+            safe(() => options.onChunk?.(text));
+            safe(() => options.onEvent?.({ type: 'text', result: text } as StreamEvent));
           },
           onToolUse: (event: unknown) => {
-            if (options.onEvent) options.onEvent({ type: 'tool_use', ...(event as object) } as StreamEvent);
+            safe(() => options.onEvent?.({ type: 'tool_use', ...(event as object) } as StreamEvent));
           },
           onToolResult: (event: unknown) => {
-            if (options.onEvent) options.onEvent({ type: 'tool_result', ...(event as object) } as StreamEvent);
+            safe(() => options.onEvent?.({ type: 'tool_result', ...(event as object) } as StreamEvent));
           },
         };
       }
@@ -1073,6 +1092,15 @@ export class SessionManager {
     // Stop ultrareview pollers
     for (const [, timer] of this.ultrareviewPollers) clearInterval(timer);
     this.ultrareviewPollers.clear();
+    // Clear council/fanout cleanup timers — their 30-min closures capture `this`
+    // and would otherwise fire after shutdown (and council timers, before this
+    // fix, were not unref'd so they blocked a clean process exit).
+    for (const [, timer] of this.councilCleanupTimers) clearTimeout(timer);
+    this.councilCleanupTimers.clear();
+    this.councils.clear();
+    for (const [, timer] of this.fanoutCleanupTimers) clearTimeout(timer);
+    this.fanoutCleanupTimers.clear();
+    this.fanouts.clear();
     // Stop autoloops (graceful: dispatch a terminate envelope so each run
     // shuts down its three persistent agents and cleans up the ledger lock).
     for (const [, ctx] of this.autoloops) {
@@ -1665,13 +1693,17 @@ export class SessionManager {
   private _isKnownCliProcess(pid: number): boolean {
     // Match known CLI binaries by basename to avoid false positives
     // (e.g., 'agent' must not match 'ssh-agent' or 'gpg-agent')
+    // Anchor each name to executable/path position ((?:^|[/\s])name(?:[\s/]|$))
+    // so a hyphenated lookalike ('vim claude-notes.md', 'ssh-agent') can never
+    // match, while the real binary ('claude', '/usr/local/bin/claude',
+    // 'node /x/claude/cli.js') still does. \b alone treated '-' as a boundary.
     const knownPatterns = [
-      /\bclaude\b/, // claude CLI
-      /\bcodex\b/, // codex CLI
-      /\bgemini\b/, // gemini CLI
-      /\bcursor-agent\b/, // cursor-agent CLI
-      /\bopencode\b/, // opencode CLI (sst/opencode)
-      /(?:^|\/)agent\s/, // 'agent' as standalone command (not ssh-agent etc.)
+      /(?:^|[/\s])claude(?:[\s/]|$)/, // claude CLI
+      /(?:^|[/\s])codex(?:[\s/]|$)/, // codex CLI
+      /(?:^|[/\s])gemini(?:[\s/]|$)/, // gemini CLI
+      /(?:^|[/\s])cursor-agent(?:[\s/]|$)/, // cursor-agent CLI
+      /(?:^|[/\s])opencode(?:[\s/]|$)/, // opencode CLI (sst/opencode)
+      /(?:^|\/)agent(?:[\s/]|$)/, // 'agent' only as executable/after a slash (not ssh-agent)
     ];
     try {
       const cmd = execFileSync('ps', ['-p', String(pid), '-o', 'command='], {
@@ -1746,7 +1778,7 @@ export class SessionManager {
             /* individual kill failed */
           }
           // Give process time to shut down, then SIGKILL
-          setTimeout(() => {
+          const orphanSigkill = setTimeout(() => {
             try {
               process.kill(pid, 0);
               process.kill(-pid, 'SIGKILL');
@@ -1760,6 +1792,8 @@ export class SessionManager {
               /* already dead */
             }
           }, STOP_SIGKILL_DELAY_MS);
+          orphanSigkill.unref(); // force-kill fallback must not keep the loop alive
+
         } catch {
           // Process already dead — nothing to do
         }
@@ -1875,7 +1909,18 @@ export class SessionManager {
       this.councils.delete(id);
       this.councilCleanupTimers.delete(id);
     }, RESULT_TTL_MS);
+    // Don't let a pending 30-min cleanup timer keep the process alive or block shutdown.
+    timer.unref();
     this.councilCleanupTimers.set(id, timer);
+  }
+
+  /** Clear and forget a cleanup timer (used on abort/shutdown so it can't fire late). */
+  private _clearCleanupTimer(map: Map<string, ReturnType<typeof setTimeout>>, id: string): void {
+    const t = map.get(id);
+    if (t) {
+      clearTimeout(t);
+      map.delete(id);
+    }
   }
 
   councilStatus(id: string): CouncilSession | undefined {
@@ -1924,6 +1969,8 @@ export class SessionManager {
     if (!council) throw new Error(`Council '${id}' not found`);
     council.abort();
     this.councils.delete(id);
+    // Drop the orphaned cleanup timer so it doesn't fire later on a deleted council.
+    this._clearCleanupTimer(this.councilCleanupTimers, id);
   }
 
   councilInject(id: string, message: string): void {
@@ -2063,7 +2110,7 @@ export class SessionManager {
         this.stopSession(sessionName).catch((err) => {
           this.logger.error(`Failed to stop ultraplan session '${sessionName}':`, err);
         });
-        setTimeout(() => {
+        const ttlTimer = setTimeout(() => {
           // Mark as error if still running at TTL expiry
           const plan = this.ultraplans.get(id);
           if (plan?.status === 'running') {
@@ -2074,6 +2121,8 @@ export class SessionManager {
           }
           this.ultraplans.delete(id);
         }, RESULT_TTL_MS);
+        ttlTimer.unref(); // don't block process exit on a 30-min TTL timer
+
       });
 
     return result;
@@ -2342,7 +2391,10 @@ export class SessionManager {
             .join('\n\n---\n\n');
         }
 
-        setTimeout(() => this.ultrareviews.delete(id), RESULT_TTL_MS);
+        {
+          const ttlDelete = setTimeout(() => this.ultrareviews.delete(id), RESULT_TTL_MS);
+          ttlDelete.unref();
+        }
       } catch {
         // Fan-out may have been cleaned up; stop polling.
         clearInterval(pollInterval);
@@ -2370,6 +2422,10 @@ export class SessionManager {
       pushPolicy: PushPolicy;
     }
   >();
+  // runIds currently being torn down by autoloopDelete. Guards against a
+  // concurrent autoloopStart recreating the same id (or autoloopChat using a
+  // dispatcher mid-shutdown) during the async delete window.
+  private _deletingAutoloops = new Set<string>();
 
   /**
    * Start a v2 autoloop in chat mode. Creates the Planner persistent session,
@@ -2385,6 +2441,9 @@ export class SessionManager {
   }): Promise<{ runId: string; plannerSession: string; state: AutoloopState }> {
     if (this.autoloops.has(opts.runId)) {
       throw new Error(`Autoloop with id '${opts.runId}' already exists`);
+    }
+    if (this._deletingAutoloops.has(opts.runId)) {
+      throw new Error(`Autoloop with id '${opts.runId}' is being deleted`);
     }
     const ledgerDir = path.join(opts.workspace, 'tasks', opts.runId);
     if (!fs.existsSync(ledgerDir)) {
@@ -2476,7 +2535,7 @@ export class SessionManager {
    */
   async autoloopChat(runId: string, text: string): Promise<{ reply: string }> {
     const ctx = this.autoloops.get(runId);
-    if (!ctx) throw new Error(`Autoloop run '${runId}' not found`);
+    if (!ctx || this._deletingAutoloops.has(runId)) throw new Error(`Autoloop run '${runId}' not found`);
     let reply = '';
     const onReply = (...args: unknown[]) => {
       const t = args[0];
@@ -2620,6 +2679,16 @@ export class SessionManager {
    * Returns true if anything was removed (in-memory entry OR registry row).
    */
   async autoloopDelete(runId: string): Promise<boolean> {
+    // Fence the async teardown so a concurrent start/chat can't race on this id.
+    this._deletingAutoloops.add(runId);
+    try {
+      return await this._autoloopDeleteInner(runId);
+    } finally {
+      this._deletingAutoloops.delete(runId);
+    }
+  }
+
+  private async _autoloopDeleteInner(runId: string): Promise<boolean> {
     const ctx = this.autoloops.get(runId);
     let touched = false;
     if (ctx) {

@@ -26,6 +26,10 @@ import {
   OPENAI_COMPAT_SESSION_PREFIX,
 } from './constants.js';
 
+// Grace period for server.close() to drain connections before lingering
+// SSE/keep-alive sockets are force-dropped (otherwise close() hangs forever).
+const SERVER_CLOSE_GRACE_MS = 5000;
+
 export class EmbeddedServer {
   private server: http.Server | null = null;
   private manager: SessionManager;
@@ -133,12 +137,20 @@ export class EmbeddedServer {
       this.server = http.createServer((req, res) => this.handleRequest(req, res));
 
       this.server.on('error', (err: NodeJS.ErrnoException) => {
+        // start() failed after the rate-limit timer was armed — clear it so it
+        // does not leak (the listen-success path keeps it; every failure path
+        // must tear it down).
+        if (this._rateLimitCleanupTimer) {
+          clearInterval(this._rateLimitCleanupTimer);
+          this._rateLimitCleanupTimer = null;
+        }
         if (err.code === 'EADDRINUSE') {
           // Port already in use — another instance running, skip
           console.log(`[embedded-server] Port ${this.port} in use, skipping (another instance running)`);
           this.server = null;
           resolve(0);
         } else {
+          this.server = null;
           reject(err);
         }
       });
@@ -148,11 +160,21 @@ export class EmbeddedServer {
         // loses EADDRINUSE never reaches this callback and leaves the file alone.
         if (this.authToken) {
           this._writeTokenFile(this.authToken);
+          const tokenFile = path.join(os.homedir(), '.openclaw', 'server-token');
           console.log(`[embedded-server] Listening on http://${this.host}:${this.port} (auth enabled)`);
-          console.log(`[embedded-server] Token file: ${path.join(os.homedir(), '.openclaw', 'server-token')}`);
-          console.log(
-            `[embedded-server] Dashboard:  http://${this.host}:${this.port}/dashboard?token=${this.authToken}`,
-          );
+          console.log(`[embedded-server] Token file: ${tokenFile}`);
+          // Only print the token-bearing convenience URL to an interactive TTY.
+          // When stdout is captured (launchd, journald, log files, CI) the token
+          // must NOT land in logs — direct the operator to the 0600 token file.
+          if (process.stdout.isTTY) {
+            console.log(
+              `[embedded-server] Dashboard:  http://${this.host}:${this.port}/dashboard?token=${this.authToken}`,
+            );
+          } else {
+            console.log(
+              `[embedded-server] Dashboard:  http://${this.host}:${this.port}/dashboard  (token in ${tokenFile})`,
+            );
+          }
         } else {
           console.log(`[embedded-server] Listening on http://${this.host}:${this.port} (AUTH DISABLED)`);
         }
@@ -174,8 +196,28 @@ export class EmbeddedServer {
     // is down. If you need to rotate the token, delete the file manually
     // or set OPENCLAW_SERVER_TOKEN explicitly.
     if (!this.server) return;
+    const server = this.server;
+    this.server = null; // clear ref up-front so a concurrent start() can't race on a closing server
     return new Promise((resolve) => {
-      this.server!.close(() => resolve());
+      let settled = false;
+      const done = (): void => {
+        if (settled) return;
+        settled = true;
+        resolve();
+      };
+      // SSE / keep-alive connections never close on their own, so a bare
+      // close() can hang forever. Force-drop lingering sockets after a grace
+      // period (and immediately on Node versions that expose the helper).
+      const forceTimer = setTimeout(() => {
+        const closeAll = (server as http.Server & { closeAllConnections?: () => void }).closeAllConnections;
+        if (typeof closeAll === 'function') closeAll.call(server);
+        done();
+      }, SERVER_CLOSE_GRACE_MS);
+      forceTimer.unref();
+      server.close(() => {
+        clearTimeout(forceTimer);
+        done();
+      });
     });
   }
 
@@ -185,7 +227,9 @@ export class EmbeddedServer {
     const urlPath = new URL(req.url || '/', `http://localhost:${this.port}`).pathname;
     const corsAllowAll = process.env.OPENCLAW_CORS_ORIGINS === '*';
     const isV1Path = urlPath.startsWith('/v1/');
-    const isLocalhost = /^https?:\/\/(localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\])(:\d+)?$/.test(origin);
+    // 0.0.0.0 is a bind/wildcard address, never a legitimate browser Origin —
+    // don't reflect it back as an allowed CORS origin.
+    const isLocalhost = /^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/.test(origin);
     if (isLocalhost || isV1Path || corsAllowAll) {
       res.setHeader('Access-Control-Allow-Origin', origin || '*');
     }
@@ -818,9 +862,20 @@ export class EmbeddedServer {
           'Cache-Control': 'no-cache',
           Connection: 'keep-alive',
         });
+        let sseClosed = false;
         const send = (event: string, data: unknown): void => {
-          res.write(`event: ${event}\n`);
-          res.write(`data: ${JSON.stringify(data)}\n\n`);
+          // A runner/dispatcher event can fire after the client disconnects or
+          // after cleanup() has ended the response. Writing then throws
+          // ERR_STREAM_WRITE_AFTER_END inside an emitter callback (unhandled).
+          if (sseClosed || res.writableEnded || !res.writable) return;
+          try {
+            res.write(`event: ${event}\n`);
+            res.write(`data: ${JSON.stringify(data)}\n\n`);
+          } catch {
+            // Connection broke mid-write; stop sending. res 'close' fires
+            // cleanup() to detach listeners and end the response.
+            sseClosed = true;
+          }
         };
         send('snapshot', { state: ctx.runner.state });
 
@@ -839,6 +894,7 @@ export class EmbeddedServer {
         const onReviewerReply = (text: unknown): void => send('reviewer_reply', { text });
         const onCompact = (e: unknown): void => send('compact', e);
         const cleanup = (): void => {
+          sseClosed = true;
           ctx.runner.off('message', onMessage);
           ctx.runner.off('state', onState);
           ctx.runner.off('push', onPush);

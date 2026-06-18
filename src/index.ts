@@ -163,7 +163,12 @@ const plugin = {
             enum: ['acceptEdits', 'bypassPermissions', 'default', 'delegate', 'dontAsk', 'plan', 'auto'],
           },
           effort: { type: 'string', enum: ['low', 'medium', 'high', 'xhigh', 'max', 'auto'] },
-          allowedTools: { type: 'array', maxItems: 200, items: { type: 'string' }, description: 'Tools to auto-approve' },
+          allowedTools: {
+            type: 'array',
+            maxItems: 200,
+            items: { type: 'string' },
+            description: 'Tools to auto-approve',
+          },
           disallowedTools: { type: 'array', maxItems: 200, items: { type: 'string' }, description: 'Tools to deny' },
           maxTurns: { type: 'number', description: 'Max agent loop turns' },
           maxBudgetUsd: { type: 'number', description: 'Max API spend (USD)' },

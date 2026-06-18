@@ -1803,7 +1803,6 @@ export class SessionManager {
             }
           }, STOP_SIGKILL_DELAY_MS);
           orphanSigkill.unref(); // force-kill fallback must not keep the loop alive
-
         } catch {
           // Process already dead — nothing to do
         }
@@ -2132,7 +2131,6 @@ export class SessionManager {
           this.ultraplans.delete(id);
         }, RESULT_TTL_MS);
         ttlTimer.unref(); // don't block process exit on a 30-min TTL timer
-
       });
 
     return result;

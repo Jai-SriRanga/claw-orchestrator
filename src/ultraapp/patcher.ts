@@ -108,8 +108,11 @@ function summariseCodebase(dir: string): string {
   return out.slice(0, 200).join('\n');
 }
 
-function snapshotDir(dir: string): Map<string, string> {
-  const snap = new Map<string, string>();
+function snapshotDir(dir: string): Map<string, Buffer> {
+  // Snapshot as raw bytes (not utf8) so binary files are captured too. Reading
+  // as utf8 and skipping unreadable files used to drop binaries from the
+  // snapshot, and restore then deleted them as "not in snapshot" — data loss.
+  const snap = new Map<string, Buffer>();
   const walk = (p: string) => {
     let entries: fs.Dirent[];
     try {
@@ -123,9 +126,9 @@ function snapshotDir(dir: string): Map<string, string> {
       if (e.isDirectory()) walk(full);
       else {
         try {
-          snap.set(full, fs.readFileSync(full, 'utf8'));
+          snap.set(full, fs.readFileSync(full));
         } catch {
-          /* skip binary or unreadable files */
+          /* truly unreadable (permission) — skip */
         }
       }
     }
@@ -134,7 +137,7 @@ function snapshotDir(dir: string): Map<string, string> {
   return snap;
 }
 
-function restoreSnapshot(dir: string, snap: Map<string, string>): void {
+function restoreSnapshot(dir: string, snap: Map<string, Buffer>): void {
   const seen = new Set<string>();
   const walk = (p: string) => {
     let entries: fs.Dirent[];

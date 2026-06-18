@@ -96,13 +96,21 @@ function lastN(s: string, n: number): string {
   return lines.slice(-n).join('\n');
 }
 
+// Only the tail of build output is ever used (see lastN). Cap each stream so a
+// runaway build (e.g. a watch loop printing forever) can't OOM the process.
+const MAX_CAPTURE_BYTES = 512 * 1024;
+function appendCapped(buf: string, chunk: string): string {
+  const next = buf + chunk;
+  return next.length > MAX_CAPTURE_BYTES ? next.slice(next.length - MAX_CAPTURE_BYTES) : next;
+}
+
 const realShell: ShellRunner = (cmd, args, opts) =>
   new Promise((resolve) => {
     const child = spawn(cmd, args, { cwd: opts.cwd, stdio: ['ignore', 'pipe', 'pipe'] });
     let stdout = '';
     let stderr = '';
-    child.stdout.on('data', (d: Buffer) => (stdout += d.toString()));
-    child.stderr.on('data', (d: Buffer) => (stderr += d.toString()));
+    child.stdout.on('data', (d: Buffer) => (stdout = appendCapped(stdout, d.toString())));
+    child.stderr.on('data', (d: Buffer) => (stderr = appendCapped(stderr, d.toString())));
     child.on('close', (code) => resolve({ ok: code === 0, stdout, stderr }));
     child.on('error', (e) => resolve({ ok: false, stdout, stderr: stderr + e.message }));
   });

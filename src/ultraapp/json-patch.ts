@@ -1,4 +1,7 @@
 export interface PatchOp {
+  // Only 'add' | 'replace' | 'remove' are implemented; applyOne() throws on any
+  // other value at runtime (kept as string here because ops are built from
+  // dynamic interview/delta input).
   op: string;
   path: string;
   value?: unknown;

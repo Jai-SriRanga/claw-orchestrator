@@ -102,9 +102,15 @@ export class InboxManager {
 
   // ── Private ─────────────────────────────────────────────────────────────
 
-  private async _deliverOrQueue(sessionName: string, msg: InboxMessage, lookup: SessionLookup): Promise<boolean> {
+  private async _deliverOrQueue(sessionName: string, sharedMsg: InboxMessage, lookup: SessionLookup): Promise<boolean> {
     const managed = lookup.getSession(sessionName);
     if (!managed) return false;
+
+    // Per-recipient copy: a broadcast passes the SAME message object to every
+    // recipient, so mutating read-state in place would let an idle recipient's
+    // delivery mark a busy recipient's queued copy as already-read (then
+    // deliverInbox filters it out and it's lost).
+    const msg: InboxMessage = { ...sharedMsg };
 
     // If session is idle, deliver directly
     if (!managed.session.isBusy && managed.session.isReady) {

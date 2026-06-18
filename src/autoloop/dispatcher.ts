@@ -943,7 +943,11 @@ export class ClaudeAgentDispatcher extends EventEmitter implements AgentDispatch
     await run(['git', 'add', '-A']);
     const commit = await run(['git', 'commit', '-m', message]);
     if (commit.code !== 0) {
-      this.logger.warn?.(`[autoloop] git commit failed: ${commit.err.slice(0, 200)}`);
+      const detail = commit.err.slice(0, 200);
+      // Surface, don't just log: a silent commit failure leaves the file on disk
+      // but uncommitted, so the next Coder iter sees inconsistent git state.
+      this.logger.error?.(`[autoloop] git commit failed for ${filename}: ${detail}`);
+      this.emit('planner_error', new Error(`git commit failed for ${filename}: ${detail}`));
     }
   }
 }

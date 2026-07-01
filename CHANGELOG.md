@@ -5,6 +5,26 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.5.0] - 2026-07-01
+
+### Added
+- **Claude Sonnet 5** registered in the model registry (`src/models.ts`): native 1M-token context
+  window, standard $3/$15-per-Mtok pricing (cached $0.30). It is the new Claude Code default as of
+  CLI 2.1.197. (Anthropic runs a launch promo of $2/$10 through 2026-08-31; we price the standard
+  rate so cost estimates never under-report.)
+
+### Changed
+- The `sonnet` alias now resolves to `claude-sonnet-5` (was `claude-sonnet-4-6`), matching the Claude
+  CLI's own `sonnet` default so cost tracking and context-window estimates stay accurate. The older
+  `claude-sonnet-4-6` remains selectable by its full id.
+- **`gpt-5.5`** pricing and context window corrected to OpenAI's published values ($5/$30 per Mtok,
+  cached $0.50, 1M-token context; previously a placeholder copied from `gpt-5.4`). Docs and examples
+  now show `gpt-5.5` as the default Codex model.
+- Tested-engine pins updated to Claude Code **2.1.197** and Codex **0.142.4**. Both ranges since the
+  last pins (CC 2.1.179→2.1.197, Codex 0.138→0.142.x) are bug-fix / TUI / subsystem work that does
+  not touch our invocation flags or the stream-json / codex-exec event schema — verified
+  wire-compatible, no wrapper change.
+
 ## [4.4.0] - 2026-06-18
 
 Reliability and robustness pass across every subsystem (from a full multi-lens code audit).

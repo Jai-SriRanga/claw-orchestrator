@@ -64,12 +64,25 @@ const MODELS: ModelDef[] = [
     pricing: { input: 5, output: 25, cached: 0.5 },
     contextWindow: 200_000,
   },
+  // Sonnet 5 is the current-generation Sonnet and the Claude Code default as of
+  // CLI 2.1.197. Native 1M-token context. We bill the standard rate ($3/$15 per
+  // Mtok, cached read 0.1× input); Anthropic also runs a launch promo of $2/$10
+  // through 2026-08-31, but pricing the standard rate keeps cost estimates from
+  // under-reporting. The `sonnet` alias points here so it tracks the CLI's own
+  // `sonnet` default.
+  {
+    id: 'claude-sonnet-5',
+    engine: 'claude',
+    provider: 'anthropic',
+    pricing: { input: 3, output: 15, cached: 0.3 },
+    aliases: ['sonnet'],
+    contextWindow: 1_000_000,
+  },
   {
     id: 'claude-sonnet-4-6',
     engine: 'claude',
     provider: 'anthropic',
     pricing: { input: 3, output: 15, cached: 0.3 },
-    aliases: ['sonnet'],
     contextWindow: 200_000,
   },
   {
@@ -82,14 +95,16 @@ const MODELS: ModelDef[] = [
   },
 
   // ── OpenAI GPT-5.5 ────────────────────────────────────────────────────
-  // TODO(gpt-5.5-pricing): pricing copied from gpt-5.4 as a placeholder until
-  // OpenAI publishes official pricing for gpt-5.5. Update on confirmation.
+  // Default Codex model. OpenAI's published standard pricing is $5/$30 per Mtok
+  // (cached 0.5) with a 1M-token context. A long-context tier applies above
+  // ~270K tokens that we don't model separately (single-tier pricing, as with
+  // every entry here).
   {
     id: 'gpt-5.5',
     engine: 'codex',
     provider: 'openai',
-    pricing: { input: 2.5, output: 15, cached: 0.25 },
-    contextWindow: 256_000,
+    pricing: { input: 5, output: 30, cached: 0.5 },
+    contextWindow: 1_000_000,
   },
 
   // ── OpenAI GPT-5.4 ────────────────────────────────────────────────────

@@ -45,6 +45,7 @@ describe('lookupModel', () => {
   it('finds all known models', () => {
     const ids = [
       'claude-opus-4-6',
+      'claude-sonnet-5',
       'claude-sonnet-4-6',
       'claude-haiku-4-5',
       'gpt-5.4',
@@ -71,7 +72,7 @@ describe('lookupModel', () => {
 describe('resolveAlias', () => {
   it('resolves known aliases', () => {
     expect(resolveAlias('opus')).toBe('claude-opus-4-8');
-    expect(resolveAlias('sonnet')).toBe('claude-sonnet-4-6');
+    expect(resolveAlias('sonnet')).toBe('claude-sonnet-5');
     expect(resolveAlias('haiku')).toBe('claude-haiku-4-5');
     expect(resolveAlias('gemini-pro')).toBe('gemini-3.1-pro-preview');
     expect(resolveAlias('gemini-flash')).toBe('gemini-3-flash-preview');
@@ -205,6 +206,32 @@ describe('getModelPricing', () => {
   });
 });
 
+describe('claude-sonnet-5', () => {
+  it('is registered with 1M context and standard $3/$15 pricing', () => {
+    const m = lookupModel('claude-sonnet-5');
+    expect(m).toBeDefined();
+    expect(m!.contextWindow).toBe(1_000_000);
+    expect(m!.pricing.input).toBe(3);
+    expect(m!.pricing.output).toBe(15);
+  });
+
+  it('owns the `sonnet` alias so it tracks the CLI default', () => {
+    expect(resolveAlias('sonnet')).toBe('claude-sonnet-5');
+    expect(getContextWindow('sonnet')).toBe(1_000_000);
+  });
+});
+
+describe('gpt-5.5', () => {
+  it('has published standard pricing ($5/$30) and 1M context', () => {
+    const m = lookupModel('gpt-5.5');
+    expect(m).toBeDefined();
+    expect(m!.pricing.input).toBe(5);
+    expect(m!.pricing.output).toBe(30);
+    expect(m!.pricing.cached).toBe(0.5);
+    expect(m!.contextWindow).toBe(1_000_000);
+  });
+});
+
 describe('isGeminiModel / isClaudeModel', () => {
   it('detects gemini models', () => {
     expect(isGeminiModel('gemini-3-flash-preview')).toBe(true);
@@ -224,7 +251,7 @@ describe('getAliases', () => {
   it('returns all aliases as Record', () => {
     const aliases = getAliases();
     expect(aliases.opus).toBe('claude-opus-4-8');
-    expect(aliases.sonnet).toBe('claude-sonnet-4-6');
+    expect(aliases.sonnet).toBe('claude-sonnet-5');
     expect(aliases['gemini-pro']).toBe('gemini-3.1-pro-preview');
   });
 });

@@ -16,8 +16,11 @@ jobs:
         with:
           node-version: 22
           registry-url: 'https://registry.npmjs.org'
+      # Trusted publishing (OIDC) needs npm >= 11.5.1; node 22 ships npm 10.x.
+      - run: npm install -g npm@latest
       - run: npm install
       - run: npm run build
+      # Auth via GitHub OIDC — no NPM_TOKEN. Requires a Trusted Publisher for
+      # this repo/workflow configured on npmjs.com (Package → Settings). Nothing
+      # to rotate, nothing expires.
       - run: npm publish --provenance --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

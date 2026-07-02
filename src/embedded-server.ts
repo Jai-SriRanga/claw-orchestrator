@@ -14,7 +14,7 @@ import * as os from 'node:os';
 import * as crypto from 'node:crypto';
 import { SessionManager } from './session-manager.js';
 import { sanitizeCwd, validateRegex } from './validation.js';
-import type { EffortLevel } from './types.js';
+import type { EffortLevel, EngineType } from './types.js';
 import { handleChatCompletion } from './openai-compat.js';
 import { getModelList } from './models.js';
 
@@ -724,7 +724,8 @@ export class EmbeddedServer {
 
       // ─── Autoloop — launch new (dashboard "+ New" button) ───────
       //
-      // Minimal contract: { workspace, run_id?, planner_model?, send_timeout_ms? }.
+      // Minimal contract: { workspace, run_id?, planner_model?, planner_engine?,
+      // coder_engine?, reviewer_engine?, send_timeout_ms? }.
       // When run_id is omitted or malformed, the server generates
       // `auto-{timestamp}-{4-byte-hex}`. Power users wanting a meaningful id
       // (e.g. "ml-refactor-v2") can pass run_id explicitly.
@@ -749,6 +750,9 @@ export class EmbeddedServer {
             runId,
             workspace: safeWorkspace,
             plannerModel: (body as { planner_model?: string }).planner_model,
+            plannerEngine: (body as { planner_engine?: EngineType }).planner_engine,
+            coderEngine: (body as { coder_engine?: EngineType }).coder_engine,
+            reviewerEngine: (body as { reviewer_engine?: EngineType }).reviewer_engine,
             sendTimeoutMs: (body as { send_timeout_ms?: number }).send_timeout_ms,
           });
           json(200, {

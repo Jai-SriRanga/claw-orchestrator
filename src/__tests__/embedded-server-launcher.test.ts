@@ -232,6 +232,28 @@ describe('POST /autoloop/new', () => {
     });
     expect(r.status).toBe(400);
   });
+
+  it('forwards planner_engine/coder_engine/reviewer_engine to autoloopStart', async () => {
+    const r = await fetch(`http://127.0.0.1:${port}/autoloop/new`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      body: JSON.stringify({
+        workspace: '/tmp',
+        run_id: 'engine-mix-test',
+        planner_engine: 'codex',
+        coder_engine: 'claude',
+        reviewer_engine: 'codex',
+      }),
+    });
+    expect(r.status).toBe(200);
+    expect(manager.autoloopStart).toHaveBeenCalledWith(
+      expect.objectContaining({
+        plannerEngine: 'codex',
+        coderEngine: 'claude',
+        reviewerEngine: 'codex',
+      }),
+    );
+  });
 });
 
 describe('POST /autoloop/:id/chat', () => {

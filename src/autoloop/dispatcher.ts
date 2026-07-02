@@ -146,9 +146,9 @@ export class ClaudeAgentDispatcher extends EventEmitter implements AgentDispatch
   private plannerSystemPrompt: string;
   private coderSystemPrompt: string;
   private reviewerSystemPrompt: string;
-  private coderModel: string;
+  private coderModel: string | undefined;
   private coderEngine: EngineType;
-  private reviewerModel: string;
+  private reviewerModel: string | undefined;
   private reviewerEngine: EngineType;
   /** Where Reviewer reads from. Created lazily by stageReviewSandbox(). */
   private reviewerSandboxDir: string;
@@ -166,9 +166,14 @@ export class ClaudeAgentDispatcher extends EventEmitter implements AgentDispatch
     this.plannerSystemPrompt = fs.readFileSync(promptPath, 'utf-8');
     this.coderSystemPrompt = fs.readFileSync(config.coderPromptPath ?? resolveDefaultCoderPrompt(), 'utf-8');
     this.reviewerSystemPrompt = fs.readFileSync(config.reviewerPromptPath ?? resolveDefaultReviewerPrompt(), 'utf-8');
-    this.coderModel = config.coderModel ?? 'sonnet';
+    // No hardcoded 'sonnet' fallback here — 'sonnet'/'opus' are Claude-specific
+    // aliases. The actual default is resolved per-engine at startSession time
+    // (see ensureCoder/ensureReviewer/ensurePlanner) so a non-claude engine
+    // falls back to *its own* default model instead of choking on a Claude
+    // alias it doesn't understand.
+    this.coderModel = config.coderModel;
     this.coderEngine = config.coderEngine ?? 'claude';
-    this.reviewerModel = config.reviewerModel ?? 'sonnet';
+    this.reviewerModel = config.reviewerModel;
     this.reviewerEngine = config.reviewerEngine ?? 'claude';
     this.ledgerDir = path.join(config.workspace, 'tasks', config.runId);
     this.reviewerSandboxDir = path.join(this.ledgerDir, 'reviewer_sandbox');
@@ -408,11 +413,15 @@ export class ClaudeAgentDispatcher extends EventEmitter implements AgentDispatch
 
   private async ensurePlanner(): Promise<void> {
     if (this.plannerStarted) return;
+    const plannerEngine = this.config.plannerEngine ?? 'claude';
     await this.config.manager.startSession({
       name: this.plannerName,
       cwd: this.config.workspace,
-      engine: this.config.plannerEngine ?? 'claude',
-      model: this.config.plannerModel ?? 'opus',
+      engine: plannerEngine,
+      // 'opus' is a Claude-specific alias — only apply it when actually
+      // running on claude. Other engines fall back to their own default
+      // model (e.g. codex → gpt-5.5) by leaving `model` undefined.
+      model: this.config.plannerModel ?? (plannerEngine === 'claude' ? 'opus' : undefined),
       permissionMode: 'bypassPermissions',
       systemPrompt: this.plannerSystemPrompt,
       // Hard role boundary: Planner must NEVER author content files itself.
@@ -580,7 +589,8 @@ export class ClaudeAgentDispatcher extends EventEmitter implements AgentDispatch
       name: this.coderName,
       cwd: this.config.workspace,
       engine: this.coderEngine,
-      model: this.coderModel,
+      // 'sonnet' is a Claude-specific alias — see ensurePlanner's comment.
+      model: this.coderModel ?? (this.coderEngine === 'claude' ? 'sonnet' : undefined),
       permissionMode: 'bypassPermissions',
       systemPrompt: this.coderSystemPrompt,
     });
@@ -779,7 +789,8 @@ export class ClaudeAgentDispatcher extends EventEmitter implements AgentDispatch
       name: this.reviewerName,
       cwd: this.reviewerSandboxDir,
       engine: this.reviewerEngine,
-      model: this.reviewerModel,
+      // 'sonnet' is a Claude-specific alias — see ensurePlanner's comment.
+      model: this.reviewerModel ?? (this.reviewerEngine === 'claude' ? 'sonnet' : undefined),
       permissionMode: 'bypassPermissions',
       systemPrompt: this.buildReviewerSystemPrompt(),
     });

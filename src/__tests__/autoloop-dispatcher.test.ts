@@ -199,6 +199,48 @@ describe('ClaudeAgentDispatcher — Planner role-boundary enforcement', () => {
   });
 });
 
+describe('ClaudeAgentDispatcher — engine-aware model defaults', () => {
+  // Regression test: 'opus'/'sonnet' are Claude-specific aliases. Passing them
+  // to codex_exec as --model produced a real failure in practice ("The 'opus'
+  // model is not supported when using Codex with a ChatGPT account") because
+  // the dispatcher used to default every role's model to a Claude alias
+  // regardless of engine.
+  const modelFor = (calls: StubCalls, name: string) =>
+    (
+      calls.startSession.mock.calls.find((c) => (c[0] as { name: string }).name === name)?.[0] as {
+        model?: string;
+      }
+    )?.model;
+
+  it('defaults to opus/sonnet only when the role is actually on the claude engine', async () => {
+    const { dispatcher, calls } = makeDispatcher();
+    await dispatcher.init({} as never);
+    await dispatcher.spawnSubagents();
+    expect(modelFor(calls, 'autoloop-r1-planner')).toBe('opus');
+    expect(modelFor(calls, 'autoloop-r1-coder')).toBe('sonnet');
+    expect(modelFor(calls, 'autoloop-r1-reviewer')).toBe('sonnet');
+  });
+
+  it('leaves model undefined (engine picks its own default) when no model is given for a non-claude engine', async () => {
+    const { dispatcher, calls } = makeDispatcher({
+      plannerEngine: 'codex',
+      coderEngine: 'claude',
+      reviewerEngine: 'codex',
+    });
+    await dispatcher.init({} as never);
+    await dispatcher.spawnSubagents();
+    expect(modelFor(calls, 'autoloop-r1-planner')).toBeUndefined();
+    expect(modelFor(calls, 'autoloop-r1-coder')).toBe('sonnet');
+    expect(modelFor(calls, 'autoloop-r1-reviewer')).toBeUndefined();
+  });
+
+  it('still honors an explicit model override even on a non-claude engine', async () => {
+    const { dispatcher, calls } = makeDispatcher({ plannerEngine: 'codex', plannerModel: 'gpt-5.5' });
+    await dispatcher.init({} as never);
+    expect(modelFor(calls, 'autoloop-r1-planner')).toBe('gpt-5.5');
+  });
+});
+
 describe('ClaudeAgentDispatcher — updatePushPolicy guard', () => {
   it('strips silent=true from on_phase_error / on_decision_needed but applies other fields', async () => {
     const policyRef: PushPolicy = JSON.parse(JSON.stringify(DEFAULT_PUSH_POLICY));

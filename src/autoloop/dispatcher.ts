@@ -25,6 +25,7 @@ import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import type { SessionManager } from '../session-manager.js';
+import type { EngineType } from '../types.js';
 import type { Logger } from '../logger.js';
 import { nullLogger } from '../logger.js';
 import { spawn } from 'node:child_process';
@@ -64,10 +65,16 @@ export interface ClaudeAgentDispatcherConfig {
   reviewerPromptPath?: string;
   /** Model alias for Planner (default: 'opus'). */
   plannerModel?: string;
+  /** Engine for Planner (default: 'claude'). Fixed for the lifetime of the run — unlike Coder/Reviewer, the Planner has no runtime override. */
+  plannerEngine?: EngineType;
   /** Default Coder model (default: 'sonnet'). Can be overridden per spawn_subagents call. */
   coderModel?: string;
+  /** Default Coder engine (default: 'claude'). Can be overridden per spawn_subagents call via `coder_engine`. */
+  coderEngine?: EngineType;
   /** Default Reviewer model (default: 'sonnet'). */
   reviewerModel?: string;
+  /** Default Reviewer engine (default: 'claude'). Can be overridden per spawn_subagents call via `reviewer_engine`. */
+  reviewerEngine?: EngineType;
   /** Per-message wall-clock cap. Default 10 min. */
   sendTimeoutMs?: number;
   logger?: Logger;
@@ -140,7 +147,9 @@ export class ClaudeAgentDispatcher extends EventEmitter implements AgentDispatch
   private coderSystemPrompt: string;
   private reviewerSystemPrompt: string;
   private coderModel: string;
+  private coderEngine: EngineType;
   private reviewerModel: string;
+  private reviewerEngine: EngineType;
   /** Where Reviewer reads from. Created lazily by stageReviewSandbox(). */
   private reviewerSandboxDir: string;
   private ledgerDir: string;
@@ -158,7 +167,9 @@ export class ClaudeAgentDispatcher extends EventEmitter implements AgentDispatch
     this.coderSystemPrompt = fs.readFileSync(config.coderPromptPath ?? resolveDefaultCoderPrompt(), 'utf-8');
     this.reviewerSystemPrompt = fs.readFileSync(config.reviewerPromptPath ?? resolveDefaultReviewerPrompt(), 'utf-8');
     this.coderModel = config.coderModel ?? 'sonnet';
+    this.coderEngine = config.coderEngine ?? 'claude';
     this.reviewerModel = config.reviewerModel ?? 'sonnet';
+    this.reviewerEngine = config.reviewerEngine ?? 'claude';
     this.ledgerDir = path.join(config.workspace, 'tasks', config.runId);
     this.reviewerSandboxDir = path.join(this.ledgerDir, 'reviewer_sandbox');
   }
@@ -211,7 +222,9 @@ export class ClaudeAgentDispatcher extends EventEmitter implements AgentDispatch
    */
   async spawnSubagents(args: SpawnSubagentsArgs = {}): Promise<void> {
     if (args.coder_model) this.coderModel = args.coder_model;
+    if (args.coder_engine) this.coderEngine = args.coder_engine as EngineType;
     if (args.reviewer_model) this.reviewerModel = args.reviewer_model;
+    if (args.reviewer_engine) this.reviewerEngine = args.reviewer_engine as EngineType;
     await this.ensureCoder();
     await this.ensureReviewer();
   }
@@ -398,7 +411,7 @@ export class ClaudeAgentDispatcher extends EventEmitter implements AgentDispatch
     await this.config.manager.startSession({
       name: this.plannerName,
       cwd: this.config.workspace,
-      engine: 'claude',
+      engine: this.config.plannerEngine ?? 'claude',
       model: this.config.plannerModel ?? 'opus',
       permissionMode: 'bypassPermissions',
       systemPrompt: this.plannerSystemPrompt,
@@ -409,7 +422,18 @@ export class ClaudeAgentDispatcher extends EventEmitter implements AgentDispatch
       // insufficient (the model would happily produce user-requested
       // deliverables directly). Read/Glob/Grep/Bash stay enabled so
       // Planner can still discover, audit, and `git status` the workspace.
+      //
+      // `disallowedTools` is Claude-CLI-specific (persistent-session.ts is the
+      // only wrapper that reads it) — it is a no-op for every other engine.
+      // `sandboxMode: 'read-only'` is the Codex/codex-app equivalent: Codex's
+      // own OS-level sandbox (seatbelt/landlock) refuses all filesystem writes
+      // regardless of what the model tries, so this is the load-bearing
+      // enforcement when plannerEngine is 'codex'/'codex-app'. It's inert for
+      // claude/gemini/cursor/opencode/custom (those wrappers don't read it).
+      // Gemini, Cursor, and OpenCode have no equivalent hard enforcement yet —
+      // see "Known limitations" in skills/references/autoloop.md.
       disallowedTools: ['Write', 'Edit', 'MultiEdit', 'NotebookEdit'],
+      sandboxMode: 'read-only',
     });
     this.plannerStarted = true;
   }
@@ -555,7 +579,7 @@ export class ClaudeAgentDispatcher extends EventEmitter implements AgentDispatch
     await this.config.manager.startSession({
       name: this.coderName,
       cwd: this.config.workspace,
-      engine: 'claude',
+      engine: this.coderEngine,
       model: this.coderModel,
       permissionMode: 'bypassPermissions',
       systemPrompt: this.coderSystemPrompt,
@@ -754,7 +778,7 @@ export class ClaudeAgentDispatcher extends EventEmitter implements AgentDispatch
     await this.config.manager.startSession({
       name: this.reviewerName,
       cwd: this.reviewerSandboxDir,
-      engine: 'claude',
+      engine: this.reviewerEngine,
       model: this.reviewerModel,
       permissionMode: 'bypassPermissions',
       systemPrompt: this.buildReviewerSystemPrompt(),

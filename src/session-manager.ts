@@ -2445,6 +2445,9 @@ export class SessionManager {
     workspace: string;
     plannerPromptPath?: string;
     plannerModel?: string;
+    plannerEngine?: EngineType;
+    coderEngine?: EngineType;
+    reviewerEngine?: EngineType;
     sendTimeoutMs?: number;
   }): Promise<{ runId: string; plannerSession: string; state: AutoloopState }> {
     if (this.autoloops.has(opts.runId)) {
@@ -2469,6 +2472,9 @@ export class SessionManager {
       workspace: opts.workspace,
       plannerPromptPath: opts.plannerPromptPath,
       plannerModel: opts.plannerModel,
+      plannerEngine: opts.plannerEngine,
+      coderEngine: opts.coderEngine,
+      reviewerEngine: opts.reviewerEngine,
       sendTimeoutMs: opts.sendTimeoutMs,
       logger: this.logger,
       pushPolicyRef: pushPolicy,

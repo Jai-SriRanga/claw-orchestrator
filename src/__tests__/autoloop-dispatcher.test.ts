@@ -135,6 +135,70 @@ describe('ClaudeAgentDispatcher — phase_error surfacing', () => {
   });
 });
 
+describe('ClaudeAgentDispatcher — per-role engine', () => {
+  it('defaults all three roles to claude when no engine is configured', async () => {
+    const { dispatcher, calls } = makeDispatcher();
+    await dispatcher.init({} as never);
+    await dispatcher.spawnSubagents();
+    const engineFor = (name: string) =>
+      (
+        calls.startSession.mock.calls.find((c) => (c[0] as { name: string }).name === name)?.[0] as {
+          engine?: string;
+        }
+      )?.engine;
+    expect(engineFor('autoloop-r1-planner')).toBe('claude');
+    expect(engineFor('autoloop-r1-coder')).toBe('claude');
+    expect(engineFor('autoloop-r1-reviewer')).toBe('claude');
+  });
+
+  it('starts Planner/Coder/Reviewer on their configured engines', async () => {
+    const { dispatcher, calls } = makeDispatcher({
+      plannerEngine: 'codex',
+      coderEngine: 'claude',
+      reviewerEngine: 'codex',
+    });
+    await dispatcher.init({} as never);
+    await dispatcher.spawnSubagents();
+    const engineFor = (name: string) =>
+      (
+        calls.startSession.mock.calls.find((c) => (c[0] as { name: string }).name === name)?.[0] as {
+          engine?: string;
+        }
+      )?.engine;
+    expect(engineFor('autoloop-r1-planner')).toBe('codex');
+    expect(engineFor('autoloop-r1-coder')).toBe('claude');
+    expect(engineFor('autoloop-r1-reviewer')).toBe('codex');
+  });
+
+  it('lets spawn_subagents override the configured coder/reviewer engine defaults', async () => {
+    const { dispatcher, calls } = makeDispatcher({ coderEngine: 'claude', reviewerEngine: 'claude' });
+    await dispatcher.spawnSubagents({ coder_engine: 'codex', reviewer_engine: 'gemini' });
+    const engineFor = (name: string) =>
+      (
+        calls.startSession.mock.calls.find((c) => (c[0] as { name: string }).name === name)?.[0] as {
+          engine?: string;
+        }
+      )?.engine;
+    expect(engineFor('autoloop-r1-coder')).toBe('codex');
+    expect(engineFor('autoloop-r1-reviewer')).toBe('gemini');
+  });
+});
+
+describe('ClaudeAgentDispatcher — Planner role-boundary enforcement', () => {
+  it('always starts Planner with disallowedTools + sandboxMode read-only, regardless of engine', async () => {
+    const { dispatcher, calls } = makeDispatcher({ plannerEngine: 'codex' });
+    await dispatcher.init({} as never);
+    const plannerStart = calls.startSession.mock.calls.find(
+      (c) => (c[0] as { name: string }).name === 'autoloop-r1-planner',
+    )?.[0] as { disallowedTools?: string[]; sandboxMode?: string } | undefined;
+    expect(plannerStart).toBeDefined();
+    // disallowedTools is the load-bearing enforcement on claude; harmless no-op on codex.
+    expect(plannerStart!.disallowedTools).toEqual(['Write', 'Edit', 'MultiEdit', 'NotebookEdit']);
+    // sandboxMode is the load-bearing enforcement on codex/codex-app; harmless no-op on claude.
+    expect(plannerStart!.sandboxMode).toBe('read-only');
+  });
+});
+
 describe('ClaudeAgentDispatcher — updatePushPolicy guard', () => {
   it('strips silent=true from on_phase_error / on_decision_needed but applies other fields', async () => {
     const policyRef: PushPolicy = JSON.parse(JSON.stringify(DEFAULT_PUSH_POLICY));

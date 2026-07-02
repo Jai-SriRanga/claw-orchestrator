@@ -541,13 +541,13 @@ Start an autoloop run. Planner is created persistent; Coder + Reviewer are spawn
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `cwd` | string | yes | Workspace (must be a git repo) |
-| `goal` | string | yes | High-level user goal in natural language |
-| `model` | string | | Planner model (default Opus) |
-| `coderModel` | string | | Coder subagent model |
-| `reviewerModel` | string | | Reviewer subagent model |
-| `maxIters` | number | | Cap on Coder/Reviewer rounds (default 50) |
-| `pushChannels` | string[] | | Notification channels (`wechat`, `whatsapp`, `email`) |
+| `run_id` | string | yes | Stable run identifier |
+| `workspace` | string | yes | Path to the git workspace where the run lives |
+| `planner_model` | string | | Model alias for Planner (default `opus`) |
+| `planner_engine` | string | | Engine for Planner: `claude` (default), `codex`, `gemini`, `cursor`, `opencode` |
+| `coder_engine` | string | | Default engine for Coder (default `claude`); Planner can override per `spawn_subagents` call |
+| `reviewer_engine` | string | | Default engine for Reviewer (default `claude`); Planner can override per `spawn_subagents` call |
+| `send_timeout_ms` | number | | Per-message wall-clock cap (default 600000 = 10 min) |
 
 ### `autoloop_chat`
 

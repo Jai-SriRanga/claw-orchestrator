@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- Autoloop Planner/Coder/Reviewer roles can now each run on a different engine. `autoloop_start` takes
+  new `planner_engine` / `coder_engine` / `reviewer_engine` parameters (`claude` default, or `codex`,
+  `gemini`, `cursor`, `opencode`); `coder_engine` / `reviewer_engine` set the defaults used when the
+  Planner later calls `spawn_subagents`, which can still override them per-spawn (the `coder_engine` /
+  `reviewer_engine` fields already existed on `SpawnSubagentsArgs` but were previously dead — the
+  dispatcher hardcoded `engine: 'claude'` for all three roles regardless).
+- Planner sessions now also start with `sandboxMode: 'read-only'`. This is a no-op on `claude` (which
+  already hard-enforces the Planner's Write/Edit boundary via `disallowedTools`) but is the load-bearing
+  enforcement for `codex`/`codex-app` — Codex has no `disallowedTools` equivalent, so without this a
+  Codex-backed Planner could write files directly, bypassing `write_plan`/`write_goal`. `gemini`,
+  `cursor`, `opencode`, and `custom` still have no hard enforcement for this boundary — see the new
+  "Known limitations" entry in `skills/references/autoloop.md`.
+
 ## [4.5.1] - 2026-07-01
 
 ### Changed

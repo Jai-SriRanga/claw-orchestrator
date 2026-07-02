@@ -1442,7 +1442,7 @@ const plugin = {
     api.registerTool({
       name: 'autoloop_start',
       description:
-        'Start a v2 autoloop run in chat mode. The user converses with the persistent Planner (Claude Opus by default) to design plan.md and goal.json; subagents (Coder/Reviewer) are spawned later via the Planner when the plan is ready. Returns a run_id and the Planner session name. See skills/references/autoloop.md for the operator reference.',
+        'Start a v2 autoloop run in chat mode. The user converses with the persistent Planner (Claude Opus by default) to design plan.md and goal.json; subagents (Coder/Reviewer) are spawned later via the Planner when the plan is ready. Planner/Coder/Reviewer can each run on a different engine (claude/codex/gemini/cursor/opencode) — coder_engine/reviewer_engine set the defaults used at spawn_subagents time and can still be overridden by the Planner per-spawn. Returns a run_id and the Planner session name. See skills/references/autoloop.md for the operator reference.',
       parameters: {
         type: 'object',
         properties: {
@@ -1452,6 +1452,20 @@ const plugin = {
           },
           workspace: { type: 'string', description: 'Path to the git workspace where the run lives' },
           planner_model: { type: 'string', description: 'Model alias for Planner (default: opus)' },
+          planner_engine: {
+            type: 'string',
+            description: 'Engine for Planner: claude (default), codex, gemini, cursor, or opencode',
+          },
+          coder_engine: {
+            type: 'string',
+            description:
+              'Default engine for Coder: claude (default), codex, gemini, cursor, or opencode. Planner can override per spawn_subagents call.',
+          },
+          reviewer_engine: {
+            type: 'string',
+            description:
+              'Default engine for Reviewer: claude (default), codex, gemini, cursor, or opencode. Planner can override per spawn_subagents call.',
+          },
           send_timeout_ms: { type: 'number', description: 'Per-message wall-clock cap (default 600000 = 10 min)' },
         },
         required: ['run_id', 'workspace'],
@@ -1461,6 +1475,9 @@ const plugin = {
           runId: args.run_id as string,
           workspace: sanitizeCwd(args.workspace as string)!,
           plannerModel: args.planner_model as string | undefined,
+          plannerEngine: args.planner_engine as EngineType | undefined,
+          coderEngine: args.coder_engine as EngineType | undefined,
+          reviewerEngine: args.reviewer_engine as EngineType | undefined,
           sendTimeoutMs: args.send_timeout_ms as number | undefined,
         });
         return {

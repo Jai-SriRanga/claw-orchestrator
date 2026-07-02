@@ -23,9 +23,11 @@ This page is the operator reference.
 
 | Agent | Engine (default) | cwd | Owns |
 |---|---|---|---|
-| **Planner** | claude / opus | workspace | strategy, `plan.md`, `goal.json`, talking to you |
-| **Coder** | claude / sonnet (override per spawn) | workspace | code changes, eval execution |
-| **Reviewer** | claude / sonnet | `<workspace>/tasks/<run_id>/reviewer_sandbox/` | distrust audit; advance / hold / rollback |
+| **Planner** | claude / opus (set via `planner_engine` + `planner_model` on `autoloop_start`) | workspace | strategy, `plan.md`, `goal.json`, talking to you |
+| **Coder** | claude / sonnet (set via `coder_engine` + `coder_model` on `autoloop_start`; Planner can still override per `spawn_subagents` call) | workspace | code changes, eval execution |
+| **Reviewer** | claude / sonnet (set via `reviewer_engine` + `reviewer_model` on `autoloop_start`; Planner can still override per `spawn_subagents` call) | `<workspace>/tasks/<run_id>/reviewer_sandbox/` | distrust audit; advance / hold / rollback |
+
+All three roles can run on different engines (`claude`, `codex`, `gemini`, `cursor`, `opencode`) — e.g. Planner and Reviewer on `codex`, Coder on `claude`. Pass `planner_engine` / `coder_engine` / `reviewer_engine` to `autoloop_start`.
 
 Coder and Reviewer **never speak to you directly**. Anything they observe
 flows through the Planner. The Planner decides what to surface and what to
@@ -78,7 +80,7 @@ curl -X POST http://127.0.0.1:18789/v1/openclaw/tools/autoloop_stop \
 
 | Tool | Args | What |
 |---|---|---|
-| `autoloop_start` | `run_id`, `workspace`, `planner_model?`, `send_timeout_ms?` | Start a run; launches Planner session. |
+| `autoloop_start` | `run_id`, `workspace`, `planner_model?`, `planner_engine?`, `coder_engine?`, `reviewer_engine?`, `send_timeout_ms?` | Start a run; launches Planner session. `*_engine` values: `claude` (default), `codex`, `gemini`, `cursor`, `opencode`. `coder_engine`/`reviewer_engine` are defaults used when the Planner later calls `spawn_subagents` — the Planner can still override them per-spawn. |
 | `autoloop_chat` | `run_id`, `text` | Send a chat message to the Planner; returns the Planner's reply. |
 | `autoloop_status` | `run_id` | Current state (status, iter, push count, subagents_spawned). |
 | `autoloop_list` | — | All active runs in this manager process. |
@@ -94,7 +96,7 @@ never see the JSON — only the Planner's narrative.
 | Tool | Args | What |
 |---|---|---|
 | `notify_user` | `level` ('info' / 'warn' / 'decision' / 'error'), `summary`, `detail?`, `channel?` ('auto' / 'wechat' / 'webchat' / 'both' / 'email') | Push you out-of-band. |
-| `spawn_subagents` | `coder_model?`, `reviewer_model?`, `initial_directive?` | Start Coder + Reviewer. Only after explicit user approval. |
+| `spawn_subagents` | `coder_model?`, `coder_engine?`, `reviewer_model?`, `reviewer_engine?`, `initial_directive?` | Start Coder + Reviewer. Only after explicit user approval. `*_engine` overrides the default set on `autoloop_start`. |
 | `send_directive` | `goal`, `constraints?`, `success_criteria?`, `max_attempts?` | Next iter's instruction to Coder. |
 | `pause_loop` | `reason` | Halt subloop at next iter boundary; chat keeps working. |
 | `resume_loop` | — | Resume after pause. |
@@ -295,3 +297,11 @@ iter 0 ledger artifacts (`directive` + `eval_output` + `diff.patch` +
   map; the on-disk ledger survives but cannot resume a running state.
 - **Multi-run / same workspace** races on `git index.lock`. Run separate
   workspaces (or git worktrees) for concurrent runs.
+- **Planner role-boundary enforcement varies by engine.** The Planner is never
+  supposed to author files directly — only via `write_plan`/`write_goal`. On
+  `claude` this is hard-enforced via `disallowedTools`; on `codex`/`codex-app`
+  it's hard-enforced via `sandboxMode: 'read-only'` (Codex's own OS-level
+  sandbox refuses filesystem writes outright). On `gemini`, `cursor`,
+  `opencode`, and `custom` there is **no equivalent technical enforcement** —
+  those engines' wrappers don't expose a read-only mode, so the boundary is
+  prompt-only if you set `planner_engine` to one of them.
